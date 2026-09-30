@@ -1,0 +1,43 @@
+{
+  "autostart": false,
+  "binary": {
+    "linux": {
+      "aarch64": "target/release/cockatiel_clip",
+      "arm": "target/release/cockatiel_clip",
+      "x86_64": "target/release/cockatiel_clip"
+    },
+    "macos": {
+      "aarch64": "target/release/cockatiel_clip",
+      "arm": "target/release/cockatiel_clip",
+      "x86_64": "target/release/cockatiel_clip"
+    },
+    "windows": {
+      "aarch64": "target/release/cockatiel_clip.exe",
+      "arm": "target/release/cockatiel_clip.exe",
+      "x86_64": "target/release/cockatiel_clip.exe"
+    }
+  },
+  "capabilities": "preprocess",
+  "command_flags": [
+    "--release"
+  ],
+  "build_command": "cargo",
+  "build_flags": ["build", "--release"],
+  "credentials": [
+    {
+      "key": "command_flag",
+      "label": "Command Flag",
+      "list": false,
+      "sensitive": false
+    }
+  ],
+  "description": "chat-command clip \u2014 timestamps the stream from its start (from the timeline's stream-start event) when a user types !clip; rejects with 'no stream to timestamp' if the stream hasn't started",
+  "launch_command": "cargo run",
+  "name": "clip",
+  "root_file": "./src/main.rs",
+  "terminal": false,
+  "version": "0.1.0",
+  "price": 0,
+  "min_rank": 0,
+  "authority": 0
+}

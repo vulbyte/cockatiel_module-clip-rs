@@ -1,0 +1,17 @@
+[package]
+name = "cockatiel_clip"
+version = "0.1.0"
+edition = "2021"
+description = "Cockatiel module — !clip: timestamp the current stream position from the timeline's stream-start event"
+license = "GPL-2.0"
+
+[dependencies]
+cockatiel-client = { git = "https://github.com/vulbyte/cockatiel_client-rs", rev = "59920409d5643942c94a23753febcaa0c3a9817e" }
+tokio = { version = "1.38", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+prost = "0.14"
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v7", "v4"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
