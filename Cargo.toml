@@ -6,7 +6,7 @@ description = "Cockatiel module — !clip: timestamp the current stream position
 license = "GPL-2.0"
 
 [dependencies]
-cockatiel-client = { git = "https://github.com/vulbyte/cockatiel_client-rs", rev = "59920409d5643942c94a23753febcaa0c3a9817e" }
+cockatiel-client = { git = "https://github.com/vulbyte/cockatiel_client-rs", rev = "d8018510768ce09d1dcd61a1770b7356299af261" }
 tokio = { version = "1.38", features = ["full"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
