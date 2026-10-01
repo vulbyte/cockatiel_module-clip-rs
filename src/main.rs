@@ -36,8 +36,8 @@ type WsWriteHalf = futures_util::stream::SplitSink<
 
 const COMMAND_NAME: &str = "clip";
 const DEFAULT_FLAG: &str = "!";
-const DEFAULT_RECONNECT_BASE_SECS: u64 = 1;
-const DEFAULT_RECONNECT_MAX_SECS: u64 = 30;
+const DEFAULT_RECONNECT_BASE_SECS: u32 = 1;
+const DEFAULT_RECONNECT_MAX_SECS: u32 = 30;
 
 /// Module config convention: settings live in config.json's `module_specific`
 /// and are created (with defaults) when missing. Reads the configured command
@@ -46,8 +46,8 @@ const DEFAULT_RECONNECT_MAX_SECS: u64 = 30;
 #[derive(Debug, Clone)]
 struct ModuleSettings {
     command_flag: String,
-    reconnect_base_secs: u64,
-    reconnect_max_secs: u64,
+    reconnect_base_secs: u32,
+    reconnect_max_secs: u32,
 }
 
 fn ensure_defaults() -> ModuleSettings {
@@ -68,10 +68,12 @@ fn ensure_defaults() -> ModuleSettings {
     let reconnect_base_secs = ms
         .get("reconnect_base_secs")
         .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
         .unwrap_or(DEFAULT_RECONNECT_BASE_SECS);
     let reconnect_max_secs = ms
         .get("reconnect_max_secs")
         .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
         .unwrap_or(DEFAULT_RECONNECT_MAX_SECS);
     if let Some(mut root) = root {
         if let Some(obj) = root.as_object_mut() {
@@ -412,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Reconnect with exponential backoff (1s, 2s, 4s … capped).
             info!("reconnecting in {}s", backoff);
-            tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(backoff as u64)).await;
             backoff = (backoff * 2).min(reconnect_max_secs);
         }
     });
