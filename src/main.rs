@@ -22,7 +22,10 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 use tracing::{info, warn};
 use tracing_subscriber::FmtSubscriber;
 
-use cockatiel_client::{proto::container::Payload, proto::*, CockatielClient};
+use cockatiel_client::proto::container_for_engine::Payload as EnginePayload;
+use cockatiel_client::proto::container_for_module::Payload as ModulePayload;
+use cockatiel_client::proto::*;
+use cockatiel_client::CockatielClient;
 
 type WsWriteHalf = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<
@@ -106,7 +109,7 @@ struct EngineIdentity {
     module: String,
 }
 
-async fn send_container(write_shared: &Arc<AsyncMutex<WsWriteHalf>>, container: Container) {
+async fn send_container(write_shared: &Arc<AsyncMutex<WsWriteHalf>>, container: ContainerForEngine) {
     let mut buf = Vec::new();
     if container.encode(&mut buf).is_ok() {
         let mut w = write_shared.lock().await;
@@ -123,12 +126,12 @@ async fn register_commands(
     command_flag: &str,
 ) {
     let id = identity.lock().await.clone();
-    let commands = Container {
-        version: 1,
+    let commands = ContainerForEngine {
+        version: 2,
         auth_token: id.auth,
         module_name: id.module,
         module_instance_uuid7: id.instance,
-        payload: Some(Payload::CommandsPayload(Commands {
+        payload: Some(EnginePayload::Commands(Commands {
             commands: vec![Command {
                 command_name: COMMAND_NAME.to_string(),
                 command_flag: command_flag.to_string(),
@@ -309,22 +312,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                 };
-                let Ok(container) = Container::decode(data.as_ref()) else { continue };
+                let Ok(container) = ContainerForModule::decode(data.as_ref()) else { continue };
                 let id = identity_for_task.lock().await.clone();
                 match container.payload {
-                    Some(Payload::AuthVerify(_)) => {
-                        let reply = Container {
-                            version: 1,
+                    Some(ModulePayload::AuthVerify(_)) => {
+                        let reply = ContainerForEngine {
+                            version: 2,
                             auth_token: id.auth.clone(),
                             module_name: id.module.clone(),
                             module_instance_uuid7: id.instance.clone(),
-                            payload: Some(Payload::AuthVerify(AuthVerify {
+                            payload: Some(EnginePayload::AuthVerify(AuthVerify {
                                 cur_auth: id.auth.clone(),
                             })),
                         };
                         send_container(&write_for_task, reply).await;
                     }
-                    Some(Payload::DatabaseQueryResult(res)) => {
+                    Some(ModulePayload::DatabaseQueryResult(res)) => {
                         if let Some(p) = pending.take() {
                             if p.query_id == res.query_id {
                                 handle_clip_result(&write_for_task, &identity_for_task, p, &res).await;
@@ -333,15 +336,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Some(Payload::MessagePreProcess(pre)) => {
+                    Some(ModulePayload::MessagePreProcess(pre)) => {
                         // Ack every pre-process message so the pipeline advances
                         // (echo the raw message back with the same uuid).
-                        let ack = Container {
-                            version: 1,
+                        let ack = ContainerForEngine {
+                            version: 2,
                             auth_token: id.auth.clone(),
                             module_name: id.module.clone(),
                             module_instance_uuid7: id.instance.clone(),
-                            payload: Some(Payload::MessagePreProcess(MessagePreProcess {
+                            payload: Some(EnginePayload::MessagePreProcess(MessagePreProcess {
                                 message_uuid7: pre.message_uuid7.clone(),
                                 raw_message: pre.raw_message.clone(),
                                 audio: Vec::new(),
@@ -363,12 +366,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 continue;
                             }
                             let query_id = uuid::Uuid::new_v4().to_string();
-                            let query = Container {
-                                version: 1,
+                            let query = ContainerForEngine {
+                                version: 2,
                                 auth_token: id.auth.clone(),
                                 module_name: id.module.clone(),
                                 module_instance_uuid7: id.instance.clone(),
-                                payload: Some(Payload::DatabaseQuery(DatabaseQuery {
+                                payload: Some(EnginePayload::DatabaseQuery(DatabaseQuery {
                                     query_id: query_id.clone(),
                                     sql: stream_start_query(&platform),
                                     params: vec![],
@@ -442,12 +445,12 @@ async fn handle_clip_result(
     match start_epoch {
         Some(start) if now >= start => {
             let ts = fmt_ts(now - start);
-            let clip = Container {
-                version: 1,
+            let clip = ContainerForEngine {
+                version: 2,
                 auth_token: id.auth.clone(),
                 module_name: id.module.clone(),
                 module_instance_uuid7: id.instance.clone(),
-                payload: Some(Payload::Log(Log {
+                payload: Some(EnginePayload::Log(Log {
                     log: format!(
                         "[clip] {}: timestamp {} (stream started {}, user {})",
                         p.platform, ts, start, p.user
@@ -465,16 +468,16 @@ async fn handle_clip_result(
             let rej = ChatMessageRejected {
                 message_uuid7: p.uuid.clone(),
                 message: None,
-                processed_message: String::new(),
+                processed_message: Some(String::new()),
                 reason: "no stream to timestamp".to_string(),
                 origin: "clip".to_string(),
             };
-            let reject = Container {
-                version: 1,
+            let reject = ContainerForEngine {
+                version: 2,
                 auth_token: id.auth.clone(),
                 module_name: id.module.clone(),
                 module_instance_uuid7: id.instance.clone(),
-                payload: Some(Payload::ChatMessageRejected(rej)),
+                payload: Some(EnginePayload::ChatMessageRejected(rej)),
             };
             send_container(write_shared, reject).await;
             info!("[clip] rejected '{}': no stream to timestamp", p.platform);
