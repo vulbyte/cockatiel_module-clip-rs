@@ -247,16 +247,23 @@ fn is_clip_command(chat: Option<&ChatMessage>, flag: &str) -> bool {
     false
 }
 
-/// SQL to find the platform's most recent stream-start event in the timeline.
-/// The adapters persist them via log_to_timeline → archival events (event_type
-/// 4) whose raw_message begins `[stream-start] <platform>: ...`.
-fn stream_start_query(platform: &str) -> String {
-    format!(
-        "SELECT raw_message FROM timeline_events \
-         WHERE event_type = 4 AND raw_message LIKE '%[stream-start] {}%' \
-         ORDER BY persisted_at DESC LIMIT 1",
-        platform
-    )
+/// A `TimelineQuery` to find the platform's most recent stream-start event.
+/// The adapters persist them via log_to_timeline → archival events whose
+/// raw_message begins `[stream-start] <platform>: ...`. This is a typed query,
+/// not raw SQL.
+fn stream_start_query(platform: &str, request_id: &str) -> TimelineQuery {
+    TimelineQuery {
+        timeline_id_uuid7: String::new(),
+        request_id: request_id.to_string(),
+        event_type: 0,
+        platform: platform.to_string(),
+        user_uuid7: String::new(),
+        kind: String::new(),
+        raw_prefix: format!("[stream-start] {}:", platform),
+        since_ms: 0,
+        limit: 1,
+        offset: 0,
+    }
 }
 
 #[tokio::main]
@@ -327,9 +334,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         send_container(&write_for_task, reply).await;
                     }
-                    Some(ModulePayload::DatabaseQueryResult(res)) => {
+                    Some(ModulePayload::TimelineQueryResult(res)) => {
                         if let Some(p) = pending.take() {
-                            if p.query_id == res.query_id {
+                            if p.request_id == res.request_id {
                                 handle_clip_result(&write_for_task, &identity_for_task, p, &res).await;
                             } else {
                                 pending = Some(p);
@@ -377,21 +384,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if platform.is_empty() {
                                 continue;
                             }
-                            let query_id = uuid::Uuid::new_v4().to_string();
+                            let request_id = uuid::Uuid::new_v4().to_string();
                             let query = ContainerForEngine {
                                 version: 2,
                                 auth_token: id.auth.clone(),
                                 module_name: id.module.clone(),
                                 module_instance_uuid7: id.instance.clone(),
-                                payload: Some(EnginePayload::DatabaseQuery(DatabaseQuery {
-                                    query_id: query_id.clone(),
-                                    sql: stream_start_query(&platform),
-                                    params: vec![],
-                                })),
+                                payload: Some(EnginePayload::TimelineQuery(
+                                    stream_start_query(&platform, &request_id),
+                                )),
                             };
                             send_container(&write_for_task, query).await;
                             pending = Some(PendingClip {
-                                query_id,
+                                request_id,
                                 uuid: pre.message_uuid7,
                                 platform,
                                 user: pre
@@ -420,7 +425,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// A `!clip` command awaiting its stream-start query result.
 struct PendingClip {
-    query_id: String,
+    request_id: String,
     uuid: String,
     platform: String,
     user: String,
@@ -431,22 +436,12 @@ async fn handle_clip_result(
     write_shared: &Arc<AsyncMutex<WsWriteHalf>>,
     identity: &Arc<AsyncMutex<EngineIdentity>>,
     p: PendingClip,
-    res: &DatabaseQueryResult,
+    res: &TimelineQueryResult,
 ) {
     let id = identity.lock().await.clone();
     let mut start_epoch: Option<i64> = None;
-    if res.success {
-        if let Ok(rows) = serde_json::from_slice::<serde_json::Value>(&res.result_blob) {
-            if let Some(arr) = rows.as_array() {
-                if let Some(row) = arr.first() {
-                    let msg = row
-                        .get("raw_message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    start_epoch = extract_start_time(msg);
-                }
-            }
-        }
+    if let Some(event) = res.events.first() {
+        start_epoch = extract_start_time(&event.raw_message);
     }
 
     let now = SystemTime::now()
@@ -565,8 +560,10 @@ mod tests {
 
     #[test]
     fn stream_start_query_targets_the_platform() {
-        let q = stream_start_query("kick");
-        assert!(q.contains("[stream-start] kick%"));
-        assert!(q.contains("event_type = 4"));
+        let q = stream_start_query("kick", "req-1");
+        assert_eq!(q.request_id, "req-1");
+        assert_eq!(q.platform, "kick");
+        assert_eq!(q.raw_prefix, "[stream-start] kick:");
+        assert_eq!(q.limit, 1);
     }
 }
