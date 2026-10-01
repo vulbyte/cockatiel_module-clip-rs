@@ -337,6 +337,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     Some(ModulePayload::MessagePreProcess(pre)) => {
+                        if !pre.message_uuid7.is_empty() {
+                            let receipt = ContainerForEngine {
+                                version: 2,
+                                auth_token: id.auth.clone(),
+                                module_name: id.module.clone(),
+                                module_instance_uuid7: id.instance.clone(),
+                                payload: Some(EnginePayload::MessageAck(MessageAck {
+                                    message_uuid7: pre.message_uuid7.clone(),
+                                })),
+                            };
+                            send_container(&write_for_task, receipt).await;
+                        }
                         // Ack every pre-process message so the pipeline advances
                         // (echo the raw message back with the same uuid).
                         let ack = ContainerForEngine {
