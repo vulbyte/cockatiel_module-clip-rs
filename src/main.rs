@@ -262,6 +262,7 @@ fn stream_start_query(platform: &str, request_id: &str) -> TimelineQuery {
         user_uuid7: String::new(),
         kind: String::new(),
         raw_prefix: format!("[stream-start] {}:", platform),
+        pipeline_status: String::new(),
         since_ms: 0,
         limit: 1,
         offset: 0,
