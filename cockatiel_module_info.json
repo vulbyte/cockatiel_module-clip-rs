@@ -1,5 +1,6 @@
 {
-  "autostart": false,
+  "authority": 0,
+  "autostart": true,
   "binary": {
     "linux": {
       "aarch64": "target/release/cockatiel_clip",
@@ -17,14 +18,14 @@
       "x86_64": "target/release/cockatiel_clip.exe"
     }
   },
-  "capabilities": "preprocess",
-  "command_flags": [
-    "run",
-    "--release"
-  ],
   "build_command": "cargo",
   "build_flags": [
     "build",
+    "--release"
+  ],
+  "capabilities": "preprocess",
+  "command_flags": [
+    "run",
     "--release"
   ],
   "credentials": [
@@ -35,18 +36,17 @@
       "sensitive": false
     }
   ],
-  "description": "chat-command clip \u2014 timestamps the stream from its start (from the timeline's stream-start event) when a user types !clip; rejects with 'no stream to timestamp' if the stream hasn't started",
+  "description": "chat-command clip — timestamps the stream from its start (from the timeline's stream-start event) when a user types !clip; rejects with 'no stream to timestamp' if the stream hasn't started",
   "launch_command": "cargo",
+  "min_rank": 0.4,
   "name": "clip",
+  "price": 0,
+  "release": {
+    "base_url": "https://github.com/vulbyte/cockatiel_module-clip-rs/releases/download",
+    "repo": "vulbyte/cockatiel_module-clip-rs",
+    "tag": "v0.1.0"
+  },
   "root_file": "./src/main.rs",
   "terminal": false,
-  "version": "0.1.0",
-  "price": 0,
-  "min_rank": 0,
-  "authority": 0,
-  "release": {
-    "repo": "vulbyte/cockatiel_module-clip-rs",
-    "base_url": "https://github.com/vulbyte/cockatiel_module-clip-rs/releases/download",
-    "tag": "v0.1.0"
-  }
+  "version": "0.1.0"
 }

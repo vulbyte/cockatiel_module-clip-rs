@@ -38,6 +38,17 @@ const COMMAND_NAME: &str = "clip";
 const DEFAULT_FLAG: &str = "!";
 const DEFAULT_RECONNECT_BASE_SECS: u32 = 1;
 const DEFAULT_RECONNECT_MAX_SECS: u32 = 30;
+const CSV_FILE: &str = "clips.csv";
+
+/// Resolve the default clip-export directory. Prefers `$HOME/.cockatiel/clips`
+/// (outside the repo), falling back to `./.cockatiel/clips` when `$HOME` is
+/// unset or empty. Pure so it is unit-testable.
+fn default_clip_dir(home: Option<String>) -> String {
+    match home {
+        Some(h) if !h.is_empty() => format!("{}/.cockatiel/clips", h),
+        _ => "./.cockatiel/clips".to_string(),
+    }
+}
 
 /// Module config convention: settings live in config.json's `module_specific`
 /// and are created (with defaults) when missing. Reads the configured command
@@ -48,6 +59,7 @@ struct ModuleSettings {
     command_flag: String,
     reconnect_base_secs: u32,
     reconnect_max_secs: u32,
+    clip_dir: String,
 }
 
 fn ensure_defaults() -> ModuleSettings {
@@ -75,6 +87,11 @@ fn ensure_defaults() -> ModuleSettings {
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
         .unwrap_or(DEFAULT_RECONNECT_MAX_SECS);
+    let clip_dir = ms
+        .get("clip_dir")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| default_clip_dir(std::env::var("HOME").ok()));
     if let Some(mut root) = root {
         if let Some(obj) = root.as_object_mut() {
             if let Some(ms) = obj
@@ -91,6 +108,9 @@ fn ensure_defaults() -> ModuleSettings {
                 if !ms.contains_key("reconnect_max_secs") {
                     ms.insert("reconnect_max_secs".into(), serde_json::json!(reconnect_max_secs));
                 }
+                if !ms.contains_key("clip_dir") {
+                    ms.insert("clip_dir".into(), serde_json::json!(clip_dir));
+                }
                 let _ = std::fs::write("config.json", serde_json::to_string_pretty(&root).unwrap());
             }
         }
@@ -99,6 +119,7 @@ fn ensure_defaults() -> ModuleSettings {
         command_flag,
         reconnect_base_secs,
         reconnect_max_secs,
+        clip_dir,
     }
 }
 
@@ -269,6 +290,64 @@ fn stream_start_query(platform: &str, request_id: &str) -> TimelineQuery {
     }
 }
 
+// ── Chat reply + CSV export helpers ──────────────────────────────────────
+
+/// Build the `chat_reply` virtual-query payload: the engine (not the module)
+/// authors the message, so we only hand it platform/channel/message.
+fn chat_reply_payload(platform: &str, channel_id: &str, message: &str) -> String {
+    serde_json::json!({
+        "platform": platform,
+        "channel_id": channel_id,
+        "message": message,
+    })
+    .to_string()
+}
+
+/// The CSV export header. Columns: offset, platform, user uuid7, unix seconds.
+fn csv_header() -> &'static str {
+    "stream_offset,platform,user,unix_time\n"
+}
+
+/// Quote a CSV field iff it contains a delimiter, quote, or newline (RFC 4180).
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Format one CSV export row (including the trailing newline).
+fn csv_row(ts: &str, platform: &str, user: &str, unix: i64) -> String {
+    format!(
+        "{},{},{},{}\n",
+        csv_field(ts),
+        csv_field(platform),
+        csv_field(user),
+        unix
+    )
+}
+
+/// Append a row to `<dir>/clips.csv`, creating the directory and (when the file
+/// is new/empty) writing the header first. Opens in append mode and flushes so
+/// the export is current even if the process crashes mid-stream.
+fn append_clip_csv(dir: &str, row: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let path = std::path::Path::new(dir).join(CSV_FILE);
+    let new_or_empty = std::fs::metadata(&path).map(|m| m.len() == 0).unwrap_or(true);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if new_or_empty {
+        file.write_all(csv_header().as_bytes())?;
+    }
+    file.write_all(row.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()
@@ -293,6 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command_flag = settings.command_flag.clone();
     let reconnect_base_secs = settings.reconnect_base_secs;
     let reconnect_max_secs = settings.reconnect_max_secs;
+    let clip_dir_for_task = settings.clip_dir.clone();
     let write_for_task = Arc::clone(&write_shared);
     let identity_for_task = Arc::clone(&identity);
     let command_flag_for_task = command_flag.clone();
@@ -340,7 +420,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(ModulePayload::TimelineQueryResult(res)) => {
                         if let Some(p) = pending.take() {
                             if p.request_id == res.request_id {
-                                handle_clip_result(&write_for_task, &identity_for_task, p, &res).await;
+                                handle_clip_result(
+                                    &write_for_task,
+                                    &identity_for_task,
+                                    &clip_dir_for_task,
+                                    p,
+                                    &res,
+                                )
+                                .await;
                             } else {
                                 pending = Some(p);
                             }
@@ -407,6 +494,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .as_ref()
                                     .map(|c| c.user_uuid7.clone())
                                     .unwrap_or_default(),
+                                channel_id: pre
+                                    .raw_message
+                                    .as_ref()
+                                    .map(|c| c.channel_id.clone())
+                                    .unwrap_or_default(),
                             });
                         }
                     }
@@ -432,12 +524,14 @@ struct PendingClip {
     uuid: String,
     platform: String,
     user: String,
+    channel_id: String,
 }
 
 /// Decide + emit for a `!clip` once the stream-start query result arrives.
 async fn handle_clip_result(
     write_shared: &Arc<AsyncMutex<WsWriteHalf>>,
     identity: &Arc<AsyncMutex<EngineIdentity>>,
+    clip_dir: &str,
     p: PendingClip,
     res: &TimelineQueryResult,
 ) {
@@ -470,6 +564,30 @@ async fn handle_clip_result(
             };
             send_container(write_shared, clip).await;
             info!("[clip] {} timestamp {}", p.platform, ts);
+
+            // Reply in chat (engine-authored) with the retrievable timestamp.
+            let reply = ContainerForEngine {
+                version: 2,
+                auth_token: id.auth.clone(),
+                module_name: id.module.clone(),
+                module_instance_uuid7: id.instance.clone(),
+                payload: Some(EnginePayload::DatabaseQuery(DatabaseQuery {
+                    query_id: "chat_reply".to_string(),
+                    sql: chat_reply_payload(
+                        &p.platform,
+                        &p.channel_id,
+                        &format!("clip marked at {} into the stream", ts),
+                    ),
+                    params: vec![],
+                })),
+            };
+            send_container(write_shared, reply).await;
+
+            // Append the export row immediately so a crash never loses it.
+            let row = csv_row(&ts, &p.platform, &p.user, now);
+            if let Err(e) = append_clip_csv(clip_dir, &row) {
+                warn!("[clip] failed to append CSV export: {}", e);
+            }
         }
         _ => {
             // Stream hasn't started (or no stream-start event): flag the
@@ -491,6 +609,20 @@ async fn handle_clip_result(
             };
             send_container(write_shared, reject).await;
             info!("[clip] rejected '{}': no stream to timestamp", p.platform);
+
+            // Reply in chat (engine-authored) so the user sees why.
+            let reply = ContainerForEngine {
+                version: 2,
+                auth_token: id.auth.clone(),
+                module_name: id.module.clone(),
+                module_instance_uuid7: id.instance.clone(),
+                payload: Some(EnginePayload::DatabaseQuery(DatabaseQuery {
+                    query_id: "chat_reply".to_string(),
+                    sql: chat_reply_payload(&p.platform, &p.channel_id, "no stream to timestamp"),
+                    params: vec![],
+                })),
+            };
+            send_container(write_shared, reply).await;
         }
     }
 }
@@ -568,5 +700,50 @@ mod tests {
         assert_eq!(q.platform, "kick");
         assert_eq!(q.raw_prefix, "[stream-start] kick:");
         assert_eq!(q.limit, 1);
+    }
+
+    #[test]
+    fn chat_reply_payload_has_platform_channel_and_message() {
+        let payload = chat_reply_payload("twitch", "chan-42", "clip marked at 00:01:02 into the stream");
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["platform"], "twitch");
+        assert_eq!(v["channel_id"], "chan-42");
+        assert_eq!(v["message"], "clip marked at 00:01:02 into the stream");
+    }
+
+    #[test]
+    fn csv_header_shape() {
+        assert_eq!(csv_header(), "stream_offset,platform,user,unix_time\n");
+    }
+
+    #[test]
+    fn csv_row_shape() {
+        assert_eq!(
+            csv_row("00:01:02", "twitch", "uuid-1", 1_700_000_000),
+            "00:01:02,twitch,uuid-1,1700000000\n"
+        );
+    }
+
+    #[test]
+    fn csv_row_escapes_commas_and_quotes() {
+        // A field with a comma is quoted; embedded quotes are doubled.
+        assert_eq!(
+            csv_row("00:00:01", "twitch", "a,b", 1),
+            "00:00:01,twitch,\"a,b\",1\n"
+        );
+        assert_eq!(
+            csv_row("00:00:01", "twitch", "he said \"hi\"", 1),
+            "00:00:01,twitch,\"he said \"\"hi\"\"\",1\n"
+        );
+    }
+
+    #[test]
+    fn clip_dir_default_resolution() {
+        assert_eq!(
+            default_clip_dir(Some("/home/streamer".to_string())),
+            "/home/streamer/.cockatiel/clips"
+        );
+        assert_eq!(default_clip_dir(None), "./.cockatiel/clips");
+        assert_eq!(default_clip_dir(Some(String::new())), "./.cockatiel/clips");
     }
 }
