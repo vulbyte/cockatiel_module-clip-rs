@@ -509,10 +509,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 }
             }
-            // Reconnect with exponential backoff (1s, 2s, 4s … capped).
-            info!("reconnecting in {}s", backoff);
+            // Reconnect with exponential backoff (1s, 2s, 4s … capped). This
+            // MUST open a fresh session and replace the read half + identity, or
+            // the loop would spin forever on the dead read half. (Previously it
+            // only logged + slept and never reconnected, so clip died for good
+            // the first time its socket dropped.)
+            warn!("Engine disconnected — reconnecting in {}s", backoff);
             tokio::time::sleep(std::time::Duration::from_secs(backoff as u64)).await;
-            backoff = (backoff * 2).min(reconnect_max_secs);
+            match CockatielClient::connect("config.json").await {
+                Ok(conn) => {
+                    let (w, r) = conn.stream.split();
+                    *write_for_task.lock().await = w;
+                    *identity_for_task.lock().await = EngineIdentity {
+                        auth: conn.auth_token.clone(),
+                        instance: conn.instance_uuid7.clone(),
+                        module: conn.config.module_name.clone(),
+                    };
+                    read = r;
+                    backoff = reconnect_base_secs;
+                    info!("Reconnected to engine");
+                }
+                Err(e) => {
+                    warn!("Engine reconnect failed: {} — retrying in {}s", e, backoff);
+                    backoff = (backoff * 2).min(reconnect_max_secs.max(reconnect_base_secs));
+                }
+            }
         }
     });
 
